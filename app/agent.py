@@ -16,7 +16,7 @@ import inspect
 import json
 from pathlib import Path
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults
 from pydantic_ai.exceptions import ModelHTTPError
 from fastmcp import Client
 from pydantic_ai.mcp import MCPToolset, StdioTransport
@@ -38,10 +38,11 @@ INSTRUCTIONS = """\
 """
 # - 用語や講座に固有のことを答える前に、必ず search_glossary で用語集を確認する。
 # モデルは実行時に渡す（テストではAPIを呼ばない TestModel に差し替えるため）
-agent = Agent(instructions=INSTRUCTIONS)
+agent = Agent(instructions=INSTRUCTIONS, output_type=[str, DeferredToolRequests])
 agent.tool_plain(tools.search_glossary)
 agent.tool_plain(tools.get_lecture_summary)
 agent.tool_plain(tools.make_quiz)
+agent.tool_plain(tools.save_learning_log, requires_approval=True)
 
 # 第5回: 使う MCP サーバーの設定ファイル。Claude Desktop や Cursor と同じ "mcpServers" 形式
 MCP_CONFIG = Path(__file__).resolve().parent / "mcp_servers.json"
@@ -108,6 +109,24 @@ def print_trace(result) -> None:
     print(f"[usage] {result.usage}")
 
 
+def run_with_approvals(target: Agent, question: str, model):
+    """承認待ちがなくなるまで確認し、結果を会話履歴に戻してエージェントを再開する。"""
+    result = target.run_sync(question, model=model)
+    while isinstance(result.output, DeferredToolRequests):
+        approvals = {}
+        for call in result.output.approvals:
+            print(f"[承認要求] {call.tool_name}({call.args})")
+            answer = input("保存を承認しますか？ [y/N]: ").strip().casefold()
+            approvals[call.tool_call_id] = answer in {"y", "yes"}
+        deferred_results = DeferredToolResults(approvals=approvals)
+        result = target.run_sync(
+            message_history=result.all_messages(),
+            deferred_tool_results=deferred_results,
+            model=model,
+        )
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="学習支援エージェントに質問する")
     parser.add_argument("question", nargs="?")
@@ -127,7 +146,7 @@ def main() -> None:
     if args.mcp:
         print("[tools] MCP サーバー（app/mcp_servers.json）")
     try:
-        result = target.run_sync(args.question, model=build_model())
+        result = run_with_approvals(target, args.question, model=build_model())
     except ModelHTTPError as e:
         print(api_error_message(e.status_code, str(e.body)[:200]))
         raise SystemExit(1)
