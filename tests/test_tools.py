@@ -57,6 +57,17 @@ def test_make_quiz_reports_missing_lecture():
     assert "用語集にありません" in tools.make_quiz(99)
 
 
+def test_save_learning_log_writes_utf8_markdown(tmp_path, monkeypatch):
+    monkeypatch.setattr(tools, "LEARNING_LOG_DIR", tmp_path / "learning_log")
+
+    result = tools.save_learning_log("今日学んだこと\n")
+
+    files = list((tmp_path / "learning_log").glob("*.md"))
+    assert len(files) == 1
+    assert files[0].read_text(encoding="utf-8") == "今日学んだこと\n"
+    assert str(files[0]) in result
+
+
 def test_default_question_of_lecture1_is_answerable_from_glossary():
     """第1回の既定の質問（app.ask）は、第3回のエージェントが用語集で正しく答えられること。"""
     from app.ask import DEFAULT_QUESTION
